@@ -1,0 +1,8 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {normalise,isManagement,ticketStaff,validateRoleAssignment} from './policy.mjs';
+const guild={id:'guild'},roles=Object.fromEntries(['owner','management','admin','moderator','developer','support','verified'].map((key,i)=>[key,{id:key,position:10-i,guild}]));
+const member=(id,keys,pos=1)=>({id,roles:{cache:new Map(keys.map(k=>[k,roles[k]])),highest:{position:pos}}});
+test('Unicode symbols resolve to the same configured roles',()=>{assert.equal(normalise('👑 | Owner — western'),'owner — western');assert.equal(normalise('🔨 | Moderator'),'moderator');assert.equal(normalise('🎫│support'),'support')});
+test('Only management and ownership may assign roles',()=>{for(const key of ['admin','moderator','developer','support','verified'])assert.equal(isManagement(member(key,[key]),roles,'guildOwner'),false);assert.equal(isManagement(member('manager',['management']),roles,'guildOwner'),true);assert.equal(isManagement(member('guildOwner',[]),roles,'guildOwner'),true)});
+test('Tickets route to support, moderator and senior staff',()=>{assert.equal(ticketStaff(member('s',['support']),roles,'o'),true);assert.equal(ticketStaff(member('m',['moderator']),roles,'o'),true);assert.equal(ticketStaff(member('d',['developer']),roles,'o'),false)});
+test('Managers cannot assign owner or act above their rank',()=>{const manager=member('m',['management'],9),target=member('p',[],1);assert.ok(validateRoleAssignment(manager,target,roles.owner,roles,'o'));assert.ok(validateRoleAssignment(manager,target,roles.management,roles,'o'));assert.equal(validateRoleAssignment(manager,target,roles.verified,roles,'o'),null);assert.ok(validateRoleAssignment(member('s',['support'],4),target,roles.verified,roles,'o'))});

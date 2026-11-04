@@ -1,0 +1,32 @@
+{
+  "guildId": "1566132871163412581",
+  "serverName": "The Western Line",
+  "portalUrl": "https://the-western-line-operations.rockycourt.chatgpt.site",
+  "fivemUrl": "http://127.0.0.1:30120",
+  "statusIntervalSeconds": 60,
+  "welcomeText": "Welcome to The Western Line server! Read the rules, introduce yourself and open a support ticket if you need help.",
+  "roles": {
+    "owner": "Owner",
+    "management": "Server Management",
+    "admin": "Administrator",
+    "moderator": "Moderator",
+    "developer": "Developer",
+    "support": "Support",
+    "verified": "Verified Member"
+  },
+  "channels": {
+    "welcome": "welcome",
+    "rules": "rules",
+    "support": "support",
+    "status": "server-status",
+    "ticketCategory": "Support Tickets",
+    "ownershipVoice": "👑│ownership-vc",
+    "managementVoice": "⛨│management-vc"
+  },
+  "joinRoles": [
+    "MET | PCSO",
+    "LAS | Student Paramedic",
+    "LFB | Trainee Firefighter",
+    "Civilian"
+  ]
+}
