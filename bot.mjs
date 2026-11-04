@@ -13,6 +13,7 @@ const membersEnabled=process.env.TWL_MEMBERS_INTENT!=='0';
 const client=new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMessageReactions,...(membersEnabled?[GatewayIntentBits.GuildMembers]:[])],partials:[Partials.Message,Partials.Reaction,Partials.User]});
 let guild,roles,channels,timer,statusMessageId=null,statusBusy=false,setupStage='starting',starterRoles=[];
 const ticketLocks=new Set();
+const purgeCooldowns=new Map();
 const privateReply=(i,content)=>i.reply({content,flags:MessageFlags.Ephemeral});
 const button=(id,label,style=ButtonStyle.Primary)=>new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style));
 function findRole(label){const matches=guild.roles.cache.filter(r=>{const n=normalise(r.name);return n===label.toLowerCase()||n.startsWith(label.toLowerCase()+' —')});if(matches.size!==1)throw Error('Expected one role: '+label);return matches.first()}
@@ -101,6 +102,41 @@ async function closeTicket(i){
  await i.channel.setTopic('twl-closed:'+memberId);
  await i.channel.send({content:'Ticket archived by '+i.user.toString()+'. The conversation is retained in this channel.',allowedMentions:{parse:[]},components:[]});
  await i.editReply('Ticket archived.');
+}
+function canPurge(member){
+ const ownership=member.roles.cache.some(r=>['owner','co owner','co-owner','coowner','ownership'].includes(normalise(r.name)));
+ return member.id===guild.ownerId||ownership||['management','admin','moderator'].some(key=>roles[key]&&member.roles.cache.has(roles[key].id));
+}
+function purgeChannelProtected(channel){
+ if(channel.type!==ChannelType.GuildText)return true;
+ if([channels.welcome,channels.rules,channels.support,channels.status,channels.tickets].some(c=>c?.id===channel.id))return true;
+ return /\b(rules?|welcome|announcements?|boosts?|server status|support|tickets?|logs?|audit|pagers?|dispatch|info hub|roster)\b/.test(normalise(channel.name));
+}
+async function purgeMessages(i){
+ await i.deferReply({flags:MessageFlags.Ephemeral});
+ const member=await guild.members.fetch({user:i.user.id,force:true});
+ if(!canPurge(member))throw Error('Moderator or higher is required to purge messages.');
+ const channel=i.channel;
+ if(!i.inGuild()||!channel||purgeChannelProtected(channel)||typeof channel.messages?.fetch!=='function'||typeof channel.bulkDelete!=='function')throw Error('Use /purge in an unprotected server text channel, such as general chat.');
+ const me=await guild.members.fetchMe();
+ const permissions=channel.permissionsFor(me);
+ if(!permissions?.has(P.ManageMessages)||!permissions.has(P.ReadMessageHistory))throw Error('The bot needs Manage Messages and Read Message History in this channel.');
+ const last=purgeCooldowns.get(member.id)||0;
+ if(Date.now()-last<5000)throw Error('Please wait five seconds before another purge.');
+ purgeCooldowns.set(member.id,Date.now());
+ const amount=i.options.getInteger('amount',true),reason=(i.options.getString('reason')||'No reason supplied.').slice(0,160);
+ const fetched=await channel.messages.fetch({limit:amount});
+ const cutoff=Date.now()-14*24*60*60*1000;
+ const eligible=fetched.filter(message=>!message.pinned&&message.createdTimestamp>cutoff);
+ let deleted=0;
+ if(eligible.size===1){await eligible.first().delete('The Western Line /purge by '+member.user.tag);deleted=1}
+ else if(eligible.size>1)deleted=(await channel.bulkDelete(eligible,true,'The Western Line /purge by '+member.user.tag)).size;
+ const record={at:new Date().toISOString(),actorId:member.id,actor:member.user.tag,channelId:channel.id,channel:channel.name,requested:amount,deleted,reason};
+ await fs.mkdir(path.join(base,'data'),{recursive:true});
+ await fs.appendFile(path.join(base,'data','purge.ndjson'),JSON.stringify(record)+'\n');
+ const audit=guild.channels.cache.find(c=>c.type===ChannelType.GuildText&&/^(audit|message|moderation)[ -]logs?$/.test(normalise(c.name))&&c.permissionsFor(me)?.has(P.SendMessages));
+ if(audit)await audit.send({embeds:[new EmbedBuilder().setColor(0x244d80).setTitle('Bulk purge').setDescription('Actor: '+member.toString()+' ('+member.id+')\nChannel: '+channel.toString()+'\nDeleted: '+deleted+' / '+amount+'\nReason: '+reason).setTimestamp()],allowedMentions:{parse:[]}}).catch(e=>console.warn('Purge audit channel unavailable:',e.code||e.name));
+ return i.editReply(deleted?`Purged ${deleted} message${deleted===1?'':'s'} from #${channel.name}. Pinned and older-than-14-day messages were skipped.`:`No eligible recent, unpinned messages were found in #${channel.name}.`);
 }
 async function setup(){
  setupStage='refresh guild inventory';
@@ -202,7 +238,7 @@ async function initialiseGuild(){
   else{roles=Object.fromEntries(Object.entries(cfg.roles).map(([k,label])=>[k,findRole(label)]));starterRoles=[];for(const label of (Array.isArray(cfg.joinRoles)?cfg.joinRoles:[])){const matches=guild.roles.cache.filter(r=>normalise(r.name)===normalise(label));if(matches.size===1)starterRoles.push(matches.first());else console.warn('Starter role missing or duplicated; skipped automatic assignment:',label)}channels={welcome:findChannel(cfg.channels.welcome),support:findChannel(cfg.channels.support),status:findChannel(cfg.channels.status),rules:findChannel(cfg.channels.rules||'rules'),tickets:guild.channels.cache.find(c=>c.type===ChannelType.GuildCategory&&c.name===cfg.channels.ticketCategory)};if(!channels.tickets)throw Error('Run Start-Bot.ps1 -Configure once to create the ticket category and channels.');setupStage='restore original welcome, support and status posts';await restoreOriginalPosts()}
     setupStage='activate rules verification reaction';await initialiseRulesReaction();
     setupStage='register slash commands';
-  await guild.commands.set([new SlashCommandBuilder().setName('ticket').setDescription('Open your private support ticket'),new SlashCommandBuilder().setName('ticketpanel').setDescription('Management: post or refresh the support panel'),new SlashCommandBuilder().setName('role').setDescription('Management: assign or remove a role').addUserOption(o=>o.setName('member').setDescription('Member').setRequired(true)).addRoleOption(o=>o.setName('role').setDescription('Role').setRequired(true)).addBooleanOption(o=>o.setName('remove').setDescription('Remove instead of adding'))].map(c=>c.toJSON()));
+  await guild.commands.set([new SlashCommandBuilder().setName('ticket').setDescription('Open your private support ticket'),new SlashCommandBuilder().setName('ticketpanel').setDescription('Management: post or refresh the support panel'),new SlashCommandBuilder().setName('role').setDescription('Management: assign or remove a role').addUserOption(o=>o.setName('member').setDescription('Member').setRequired(true)).addRoleOption(o=>o.setName('role').setDescription('Role').setRequired(true)).addBooleanOption(o=>o.setName('remove').setDescription('Remove instead of adding')),new SlashCommandBuilder().setName('purge').setDescription('Moderator+: delete recent messages in this chat (maximum 100)').addIntegerOption(o=>o.setName('amount').setDescription('Number of recent messages to remove').setRequired(true).setMinValue(1).setMaxValue(100)).addStringOption(o=>o.setName('reason').setDescription('Optional audit reason').setMaxLength(160))].map(c=>c.toJSON()));
    setupStage='update server status';await updateStatus();timer=setInterval(()=>updateStatus().catch(e=>console.error('Status update failed:',e.message)),Math.max(30,cfg.statusIntervalSeconds)*1000);
   console.log('The Western Line bot is ready. Tickets, welcome, verified role and server status are running.');
    guildReady=true;setupStage='ready';await writeRuntime();
@@ -240,6 +276,7 @@ client.on(Events.InteractionCreate,async i=>{
   if(i.isButton()){if(i.customId==='twl:open')return await openTicket(i);if(i.customId==='twl:close')return await closeTicket(i);return}
   if(!i.isChatInputCommand())return;
   if(i.commandName==='ticket')return await openTicket(i);
+  if(i.commandName==='purge')return await purgeMessages(i);
   if(i.commandName==='ticketpanel'){if(!isManagement(i.member,roles,guild.ownerId))return privateReply(i,'Management or ownership only.');await i.deferReply({flags:MessageFlags.Ephemeral});await ticketPanel();return i.editReply('Support panel updated.')}
   if(i.commandName==='role'){
    const target=await guild.members.fetch(i.options.getUser('member',true).id);const role=i.options.getRole('role',true);
