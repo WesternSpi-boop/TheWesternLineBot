@@ -4,6 +4,6 @@
   "private": true,
   "description": "The Western Line tickets, welcomes, verified role and FiveM status",
   "type": "module",
-  "scripts": {"start": "node bot.mjs", "check": "node --check bot.mjs", "test": "node --test policy.test.mjs"},
+  "scripts": {"start": "node bot.mjs", "check": "node --check bot.mjs", "test": "node --test"},
   "dependencies": {"discord.js": "^14.22.1"}
 }

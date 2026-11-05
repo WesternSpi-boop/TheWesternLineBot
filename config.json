@@ -2,7 +2,7 @@
   "guildId": "1566132871163412581",
   "serverName": "The Western Line",
   "portalUrl": "https://the-western-line-operations.rockycourt.chatgpt.site",
-  "fivemUrl": "http://127.0.0.1:30120",
+  "fivemUrl": "http://node4.northhost.fr:30104",
   "statusIntervalSeconds": 60,
   "welcomeText": "Welcome to The Western Line server! Read the rules, introduce yourself and open a support ticket if you need help.",
   "roles": {

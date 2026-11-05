@@ -5,13 +5,14 @@ import {timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {Client,Events,GatewayIntentBits,Partials,PermissionFlagsBits as P,PermissionsBitField,ChannelType,EmbedBuilder,ActionRowBuilder,ButtonBuilder,ButtonStyle,SlashCommandBuilder,MessageFlags} from 'discord.js';
 import {normalise,isManagement,ticketStaff,validateRoleAssignment} from './policy.mjs';
+import {resolvePostReferences} from './post-references.mjs';
 const base=path.dirname(fileURLToPath(import.meta.url));
 const cfg=JSON.parse(await fs.readFile(path.join(base,'config.json'),'utf8'));
 if(!process.env.DISCORD_BOT_TOKEN){console.error('No bot token available. Run Start-Bot.ps1 and enter it privately.');process.exit(1)}
 const fivemStatusUrl=(process.env.TWL_FIVEM_STATUS_URL||cfg.fivemUrl).replace(/\/+$/,'');
 const membersEnabled=process.env.TWL_MEMBERS_INTENT!=='0';
 const client=new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMessageReactions,...(membersEnabled?[GatewayIntentBits.GuildMembers]:[])],partials:[Partials.Message,Partials.Reaction,Partials.User]});
-let guild,roles,channels,timer,statusMessageId=null,statusBusy=false,setupStage='starting',starterRoles=[];
+let guild,roles,channels,timer,statusMessageId=null,statusBusy=false,statusReferenceWarning=false,setupStage='starting',starterRoles=[];
 const ticketLocks=new Set();
 const purgeCooldowns=new Map();
 const privateReply=(i,content)=>i.reply({content,flags:MessageFlags.Ephemeral});
@@ -31,11 +32,9 @@ async function restoreOriginalPosts(){
   {key:'ticketPanelId',channel:channels.support,original:'1566292671142563923',copy:'1566534737269362823'},
   {key:'statusMessageId',channel:channels.status,original:'1566292681586380841',copy:'1566534739563651184'}
  ];
- for(const post of posts){
-  const original=await post.channel.messages.fetch(post.original).catch(()=>null);
-  if(!original||original.author.id!==client.user.id)throw Error('Could not verify the original '+post.key+'; left messages untouched.');
-  state[post.key]=original.id;
- }
+ const {references,missing}=await resolvePostReferences(posts,client.user.id,state);
+ for(const post of posts){if(references[post.key])state[post.key]=references[post.key];else delete state[post.key]}
+ if(missing.length)console.warn('Existing post references unavailable; left Discord messages untouched:',missing.join(', '));
  await saveState(state);
 }
 async function getState(){try{return JSON.parse(await fs.readFile(path.join(base,'data/state.json'),'utf8'))}catch(e){if(e.code==='ENOENT')return{};throw e}}
@@ -57,10 +56,15 @@ async function initialiseRulesReaction(){
 async function updateStatus(){
  if(statusBusy||!channels?.status)return;statusBusy=true;
  try{
+  const message=state.statusMessageId?await channels.status.messages.fetch(state.statusMessageId).catch(()=>null):null;
+  if(message?.author.id!==client.user.id){
+   if(!statusReferenceWarning)console.warn('Status updates paused: no verified existing status post. No replacement post was created.');
+   statusReferenceWarning=true;return;
+  }
+  statusReferenceWarning=false;
   let online=false,count=0,max=0;
   try{const [a,b]=await Promise.all([fetch(fivemStatusUrl+'/info.json',{signal:AbortSignal.timeout(5000)}),fetch(fivemStatusUrl+'/dynamic.json',{signal:AbortSignal.timeout(5000)})]);if(a.ok&&b.ok){const info=await a.json(),dynamic=await b.json();online=Boolean(info.vars);count=Number(dynamic.clients)||0;max=Number(dynamic.sv_maxclients)||0}}catch{}
   const stamp=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/London',dateStyle:'medium',timeStyle:'short'}).format(new Date());
-  let message;if(state.statusMessageId)message=await channels.status.messages.fetch(state.statusMessageId).catch(()=>null);
   const currentBanner=message?.embeds?.[0]?.image?.url||state.statusBannerUrl;
   let keepBanner=false;
   try{if(currentBanner){const u=new URL(currentBanner),expiry=Number.parseInt(u.searchParams.get('ex')||'',16)*1000;keepBanner=u.pathname.endsWith('/server-status-banner.png')&&(!expiry||expiry>Date.now()+7200000)}}catch{}
@@ -70,9 +74,9 @@ async function updateStatus(){
   if(message?.author.id===client.user.id){
    const edit={embeds:[embed],allowedMentions:{parse:[]}};
    edit.attachments=[];if(!keepBanner)edit.files=[bannerFile];
-   message=await message.edit(edit);
-   const savedBanner=message.embeds?.[0]?.image?.url;if(savedBanner&&savedBanner!==state.statusBannerUrl){state.statusBannerUrl=savedBanner;await saveState(state)}
-  }else{message=await channels.status.send({embeds:[embed],files:[bannerFile],allowedMentions:{parse:[]}});state.statusMessageId=message.id;state.statusBannerUrl=message.embeds?.[0]?.image?.url;await saveState(state)}
+   const updated=await message.edit(edit);
+   const savedBanner=updated.embeds?.[0]?.image?.url;if(savedBanner&&savedBanner!==state.statusBannerUrl){state.statusBannerUrl=savedBanner;await saveState(state)}
+  }
  }finally{statusBusy=false}
 }
 async function ticketPanel(){
@@ -245,7 +249,7 @@ async function initialiseGuild(){
   }catch(e){const issue=setupStage+': '+(e.code||e.message);console.error('Server features need attention:',issue,{status:e.status,method:e.method,route:e.url});await writeRuntime({problem:issue})}
  finally{guildInitialising=false}
 }
-client.once(Events.ClientReady,async()=>{client.user.setPresence({status:'online',activities:[{name:'The Western Line support'}]});console.log('Connected to Discord as '+client.user.tag+' on this PC.');await initialiseGuild();await startWhitelistBridge()});
+client.once(Events.ClientReady,async()=>{client.user.setPresence({status:'online',activities:[{name:'The Western Line support'}]});console.log('Connected to Discord as '+client.user.tag+(process.env.SERVER_PORT?' on Bot-Hosting.':' on this PC.'));await initialiseGuild();await startWhitelistBridge()});
 client.on(Events.GuildCreate,async g=>{if(g.id===cfg.guildId)await initialiseGuild()});
 setInterval(()=>{if(client.isReady()){writeRuntime().catch(()=>{});if(!guildReady)initialiseGuild().catch(()=>{})}},60000);
 client.on(Events.GuildMemberAdd,async member=>{
